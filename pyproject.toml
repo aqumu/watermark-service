@@ -1,0 +1,29 @@
+[project]
+name = "watermark-service"
+version = "1.0.0"
+description = "Watermark removal microservice using segmentation + removal models"
+requires-python = ">=3.10,<3.14"
+dependencies = [
+    "fastapi>=0.110",
+    "uvicorn[standard]>=0.27",
+    "python-multipart>=0.0.7",
+    "pydantic>=2.5",
+    "pydantic-settings>=2.1",
+    "pyyaml>=6.0",
+    "numpy>=1.26",
+    "opencv-python-headless>=4.9",
+    "segmentation-models-pytorch>=0.3.3",
+    "timm>=0.9.0",
+]
+
+[project.optional-dependencies]
+dev = ["pytest", "httpx", "pytest-asyncio"]
+# upscaling uses a self-contained RRDBNet implementation (no extra packages needed)
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.backends._legacy:_Backend"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["src*"]

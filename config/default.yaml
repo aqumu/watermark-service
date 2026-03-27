@@ -1,0 +1,49 @@
+model:
+  models_dir: "./models"
+  # "auto" scans models_dir for the newest model_seg_*.pth / model_rem_*.pth
+  # Or set an explicit path: "./models/model_rem_1.0.pth"
+  seg_checkpoint: "auto"
+  removal_checkpoint: "auto"
+  seg_image_size: 256
+  removal_image_size: 256
+  seg_encoder: "efficientnet-b0"
+  removal_base_channels: 32
+  removal_depth: 4
+
+inference:
+  device: "auto"
+  mask_threshold: 0.5
+  mask_dilate_ksize: 5
+  feather_radius: 9
+  mask_expand: 0
+  amp: true
+
+upscale:
+  enabled: true
+  # model_name selects both the architecture and the expected weight filename.
+  # Supported values:
+  #   RealESRGAN_x4plus          (4x, general images — default)
+  #   RealESRGAN_x2plus          (2x, general images)
+  #   RealESRGAN_x4plus_anime_6B (4x, anime / illustrations)
+  #   realesr-animevideov3       (4x, anime video)
+  #   realesr-general-x4v3       (4x, general — lighter model)
+  model_name: "RealESRGAN_x2plus"
+  # model_path: "auto" → looks for {model_name}.pth inside models_dir
+  # Set an explicit path to override, e.g. "./models/RealESRGAN_x2plus.pth"
+  model_path: "auto"
+  tile: 512       # tile size; keeps VRAM usage bounded on large images
+  tile_pad: 10
+  half: true      # fp16 on CUDA; set false if you hit precision issues
+  # Images whose longest side is <= this value (pixels) are upscaled before
+  # entering the seg/removal models. Set to 0 to disable automatic upscaling.
+  resolution_threshold: 720
+
+batch:
+  max_batch_size: 8
+  io_workers: 4
+  max_concurrent_jobs: 4
+
+server:
+  host: "0.0.0.0"
+  port: 8000
+  log_level: "info"
