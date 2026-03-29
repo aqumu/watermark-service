@@ -1,12 +1,11 @@
 # Watermark Removal Service
 
-Microservice that detects and removes watermarks from images using two models in sequence:
+Microservice that detects and removes watermarks from images using a multi-stage pipeline:
 
-1. **Segmentation** (EfficientNet-B0 U-Net) — predicts a binary watermark mask
-2. **Removal** (MaskedUNet) — removes the watermark using the predicted mask
-3. **Upscale** (placeholder) — reserved for a future upscaling model
-
-Results are blended back to the original image resolution with feathered edges.
+1. **Upscale** (Real-ESRGAN, optional) — upscales low-resolution inputs before processing
+2. **Segmentation** (EfficientNet-B0 U-Net) — predicts a binary watermark mask
+3. **Removal** (MaskedUNet) — inpaints the watermark region using the predicted mask
+4. **Blend** — feather-blends the result back onto the original at its original resolution
 
 ## Setup
 
@@ -134,7 +133,28 @@ Key settings:
 | `model.removal_checkpoint` | `auto` | Removal checkpoint path or `auto` |
 | `inference.device` | `auto` | `auto`, `cuda`, or `cpu` |
 | `inference.amp` | `true` | Mixed precision (CUDA only) |
+| `inference.feather_radius` | `9` | Default blend softness radius in px |
+| `inference.mask_expand` | `0` | Default extra mask dilation in px |
 | `batch.max_batch_size` | `8` | Max images per GPU forward pass |
+| `batch.max_concurrent_jobs` | `4` | Max concurrent async batch jobs |
+| `upscale.enabled` | `false` | Enable Real-ESRGAN upscaling |
+| `upscale.model_name` | `RealESRGAN_x4plus` | ESRGAN model variant (see below) |
+| `upscale.model_path` | `auto` | ESRGAN weights path or `auto` |
+| `upscale.resolution_threshold` | `720` | Upscale images whose longest side is ≤ this (0 = always upscale) |
+| `upscale.tile` | `512` | Tile size for bounded VRAM usage (0 = no tiling) |
+| `upscale.half` | `true` | FP16 inference on CUDA |
+
+### Real-ESRGAN model variants
+
+| `model_name` | Scale | Best for |
+|---|---|---|
+| `RealESRGAN_x4plus` | 4× | General images |
+| `RealESRGAN_x2plus` | 2× | General images |
+| `RealESRGAN_x4plus_anime_6B` | 4× | Anime / illustrations |
+| `realesr-animevideov3` | 4× | Anime video frames |
+| `realesr-general-x4v3` | 4× | General (lighter model) |
+
+Place the corresponding `.pth` file in `models/` and set `upscale.model_path: "auto"` to pick it up automatically.
 
 ## Tests
 
