@@ -10,6 +10,11 @@ TRAINING_DIR="../watermark-removal/training"
 echo "=== Watermark Removal Service Setup ==="
 
 # 1. Create virtual environment
+if ! $PYTHON -c "import venv" &>/dev/null; then
+    echo "ERROR: Python venv module not found."
+    echo "Install it with: sudo apt-get install python3-venv"
+    exit 1
+fi
 if [ ! -d "$VENV" ]; then
     echo "Creating virtual environment..."
     $PYTHON -m venv "$VENV"
