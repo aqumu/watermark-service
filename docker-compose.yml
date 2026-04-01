@@ -6,12 +6,5 @@ services:
     volumes:
       - ./models:/app/models:ro
       - ./config:/app/config:ro
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: 1
-              capabilities: [gpu]
     environment:
       - WM_CONFIG_PATH=/app/config/default.yaml
