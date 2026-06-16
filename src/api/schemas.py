@@ -1,6 +1,13 @@
 """Pydantic request/response models for the API."""
 
+from enum import Enum
+
 from pydantic import BaseModel
+
+
+class ProcessingMode(str, Enum):
+    old = "old"
+    new = "new"
 
 
 class HealthResponse(BaseModel):

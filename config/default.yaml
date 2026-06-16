@@ -5,10 +5,15 @@ model:
   seg_checkpoint: "auto"
   removal_checkpoint: "auto"
   seg_image_size: 256
-  removal_image_size: 256
+  removal_image_width: 512
+  removal_image_height: 256
+  removal_crop_aspect_ratio: 3.54
+  removal_crop_margin_ratio: 0.12
+  removal_crop_min_width_ratio: 0.50
   seg_encoder: "efficientnet-b0"
   removal_base_channels: 32
   removal_depth: 4
+  watermark_path: "./models/watermark.png"
 
 inference:
   device: "auto"
@@ -31,12 +36,23 @@ upscale:
   # model_path: "auto" → looks for {model_name}.pth inside models_dir
   # Set an explicit path to override, e.g. "./models/RealESRGAN_x2plus.pth"
   model_path: "auto"
-  tile: 512       # tile size; keeps VRAM usage bounded on large images
+  tile: 512 # tile size; keeps VRAM usage bounded on large images
   tile_pad: 10
-  half: true      # fp16 on CUDA; set false if you hit precision issues
+  half: true # fp16 on CUDA; set false if you hit precision issues
   # Images whose longest side is <= this value (pixels) are upscaled before
   # entering the seg/removal models. Set to 0 to disable automatic upscaling.
   resolution_threshold: 720
+
+new:
+  enabled: true
+  method: "lama"
+  inpaint_width: 114
+  inpaint_height: 48
+  inpaint_radius: 3
+  inpaint_size: 256
+  # Path to LaMa checkpoint when method="lama".
+  # Supports "auto" (scans models_dir for big-lama/**/*.ckpt) or explicit path.
+  checkpoint: "auto"
 
 batch:
   max_batch_size: 8

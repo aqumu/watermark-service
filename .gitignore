@@ -8,8 +8,11 @@ build/
 .venv/
 venv/
 env/
-models/*.pth
-models/*.pt
+/models/
 .env
 *.log
 jobs_tmp/
+test_batch/
+alt_images/
+results.zip
+test_batch.zip

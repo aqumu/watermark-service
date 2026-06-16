@@ -6,6 +6,11 @@ build/
 .venv/
 venv/
 .git/
-models/*.pth
+/models/
 tests/
+scripts/
 .env
+*.log
+jobs_tmp/
+results.zip
+test_batch.zip

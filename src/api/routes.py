@@ -14,6 +14,7 @@ from src.api.schemas import (
     HealthResponse,
     JobStatusResponse,
     JobSubmitResponse,
+    ProcessingMode,
 )
 from src.pipeline.pipeline import WatermarkRemovalPipeline
 from src.worker.job_manager import get_job_manager
@@ -30,7 +31,7 @@ def health(pipeline: WatermarkRemovalPipeline = Depends(get_pipeline)):
     gpu_used = gpu_total = None
     if pipeline.device.type == "cuda":
         gpu_used = torch.cuda.memory_allocated(pipeline.device) / 1024 / 1024
-        gpu_total = torch.cuda.get_device_properties(pipeline.device).total_mem / 1024 / 1024
+        gpu_total = torch.cuda.get_device_properties(pipeline.device).total_memory / 1024 / 1024
 
     return HealthResponse(
         status="ok",
@@ -48,14 +49,13 @@ async def process_single(
     image: UploadFile = File(...),
     output_format: str = Query("png", pattern="^(png|jpeg|webp)$"),
     quality: int = Query(95, ge=1, le=100),
-    feather: int | None = Query(None, ge=0),
-    mask_expand: int | None = Query(None, ge=0),
+    mode: ProcessingMode = Query("old"),
     pipeline: WatermarkRemovalPipeline = Depends(get_pipeline),
 ):
     """Process a single image. Returns the cleaned image directly."""
     data = await image.read()
     try:
-        result_bytes = pipeline.process_single(data, fmt=output_format, quality=quality)
+        result_bytes = pipeline.process_single(data, fmt=output_format, quality=quality, mode=mode.value)
     except (ValueError, RuntimeError) as e:
         return Response(
             content=ErrorResponse(detail=str(e)).model_dump_json(),
@@ -74,12 +74,13 @@ async def process_batch(
     images: list[UploadFile] = File(...),
     output_format: str = Query("png", pattern="^(png|jpeg|webp)$"),
     quality: int = Query(95, ge=1, le=100),
+    mode: ProcessingMode = Query("old"),
     pipeline: WatermarkRemovalPipeline = Depends(get_pipeline),
 ):
     """Process multiple images synchronously. Returns a ZIP archive."""
     image_data = [await f.read() for f in images]
 
-    results = pipeline.process_batch(image_data, fmt=output_format, quality=quality)
+    results = pipeline.process_batch(image_data, fmt=output_format, quality=quality, mode=mode.value)
 
     ext = {"png": ".png", "jpeg": ".jpg", "webp": ".webp"}[output_format]
 
@@ -108,13 +109,14 @@ async def process_batch_async(
     images: list[UploadFile] = File(...),
     output_format: str = Query("png", pattern="^(png|jpeg|webp)$"),
     quality: int = Query(95, ge=1, le=100),
+    mode: ProcessingMode = Query("old"),
     pipeline: WatermarkRemovalPipeline = Depends(get_pipeline),
 ):
     """Submit a large batch for background processing. Returns a job ID."""
     image_data = [await f.read() for f in images]
 
     manager = get_job_manager()
-    job_id = manager.submit(image_data, pipeline, fmt=output_format, quality=quality)
+    job_id = manager.submit(image_data, pipeline, fmt=output_format, quality=quality, mode=mode.value)
 
     return JobSubmitResponse(job_id=job_id, total=len(image_data))
 

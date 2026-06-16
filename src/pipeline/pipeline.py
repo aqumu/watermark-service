@@ -13,8 +13,10 @@ from src.config import ServiceConfig
 from src.models.checkpoint import load_checkpoint
 from src.models.masked_unet import MaskedUNet, build_model
 from src.models.seg_model import build_seg_model
+from src.pipeline.alignment import AlignmentStep
 from src.pipeline.blending import BlendingStep
 from src.pipeline.context import ImageContext
+from src.pipeline.inpaint import InpaintStep
 from src.pipeline.removal import RemovalStep
 from src.pipeline.segmentation import SegmentationStep
 from src.pipeline.upscale import UpscaleStep
@@ -30,11 +32,10 @@ def _resolve_device(device_str: str) -> torch.device:
 
 
 class WatermarkRemovalPipeline:
-    """Chains upscale → segmentation → removal → blending with batch support.
+    """Chains segmentation → alignment → removal → blending → upscale.
 
-    Low-resolution images (longest side ≤ resolution_threshold) are upscaled
-    before entering the seg/removal models so both the mask quality and the
-    final output benefit from the higher resolution.
+    Upscaling is applied to the final result (not the input) so the seg and
+    removal models always see naturally-captured image texture.
     """
 
     def __init__(self, config: ServiceConfig):
@@ -59,6 +60,30 @@ class WatermarkRemovalPipeline:
 
         # Initialize pipeline steps
         amp = config.inference.amp and self.device.type == "cuda"
+        self.seg_step = SegmentationStep(
+            model=seg_model,
+            image_size=config.model.seg_image_size,
+            threshold=config.inference.mask_threshold,
+            device=self.device,
+            amp=amp,
+        )
+        self.alignment_step = AlignmentStep(
+            watermark_path=config.model.watermark_path,
+        )
+        self.removal_step = RemovalStep(
+            model=removal_model,
+            image_width=config.model.removal_image_width,
+            image_height=config.model.removal_image_height,
+            crop_aspect_ratio=config.model.removal_crop_aspect_ratio,
+            crop_margin_ratio=config.model.removal_crop_margin_ratio,
+            crop_min_width_ratio=config.model.removal_crop_min_width_ratio,
+            device=self.device,
+            amp=amp,
+        )
+        self.blend_step = BlendingStep(
+            feather_radius=config.inference.feather_radius,
+            mask_expand=config.inference.mask_expand,
+        )
         self.upscale_step = UpscaleStep(
             model_name=config.upscale.model_name,
             model_path=config.upscale.model_path if config.upscale.enabled else "",
@@ -68,33 +93,27 @@ class WatermarkRemovalPipeline:
             half=config.upscale.half,
             resolution_threshold=config.upscale.resolution_threshold,
         )
-        self.seg_step = SegmentationStep(
-            model=seg_model,
-            image_size=config.model.seg_image_size,
-            threshold=config.inference.mask_threshold,
-            device=self.device,
-            amp=amp,
-        )
-        self.removal_step = RemovalStep(
-            model=removal_model,
-            image_size=config.model.removal_image_size,
-            dilate_ksize=config.inference.mask_dilate_ksize,
-            clamp_dilate_ksize=config.inference.mask_clamp_ksize,
-            device=self.device,
-            amp=amp,
-        )
-        self.blend_step = BlendingStep(
-            feather_radius=config.inference.feather_radius,
-            mask_expand=config.inference.mask_expand,
-        )
 
         # GPU steps process in sub-batches; CPU steps use thread pool
         self.max_batch_size = config.batch.max_batch_size
         self.io_pool = ThreadPoolExecutor(max_workers=config.batch.io_workers)
 
+        self.inpaint_step: InpaintStep | None = None
+        if config.new.enabled:
+            self.inpaint_step = InpaintStep(
+                method=config.new.method,
+                inpaint_width=config.new.inpaint_width,
+                inpaint_height=config.new.inpaint_height,
+                inpaint_radius=config.new.inpaint_radius,
+                inpaint_size=config.new.inpaint_size,
+                checkpoint_path=config.new.checkpoint,
+                device=self.device,
+                amp=config.inference.amp,
+            )
+
         logger.info("Pipeline ready (seg=%dx%d, removal=%dx%d, batch=%d, upscale_threshold=%dpx)",
                      config.model.seg_image_size, config.model.seg_image_size,
-                     config.model.removal_image_size, config.model.removal_image_size,
+                     config.model.removal_image_width, config.model.removal_image_height,
                      self.max_batch_size, config.upscale.resolution_threshold)
 
     def _decode_to_context(self, image_bytes: bytes, image_id: str | None = None) -> ImageContext:
@@ -129,16 +148,25 @@ class WatermarkRemovalPipeline:
                         ctx.error = str(e)
 
     def process_single(self, image_bytes: bytes, fmt: str = "png",
-                       quality: int = 95) -> bytes:
+                       quality: int = 95, mode: str = "old") -> bytes:
         """Process one image synchronously. Returns encoded result bytes."""
         ctx = self._decode_to_context(image_bytes)
         if ctx.error:
             raise ValueError(ctx.error)
 
-        self.upscale_step.process_batch([ctx])
-        self.seg_step.process_batch([ctx])
-        self.removal_step.process_batch([ctx])
-        self.blend_step.process_batch([ctx])
+        if mode == "old":
+            self.seg_step.process_batch([ctx])
+            self.alignment_step.process_batch([ctx])
+            self.removal_step.process_batch([ctx])
+            self.blend_step.process_batch([ctx])
+            self.upscale_step.process_batch([ctx])
+        else:
+            if self.inpaint_step is None:
+                raise RuntimeError("New processing mode not enabled — set new.enabled=true in config")
+            ctx.result_bgr = ctx.original_bgr.copy()
+            self.upscale_step.process_batch([ctx])
+            ctx.original_bgr = ctx.result_bgr.copy()
+            self.inpaint_step.process_batch([ctx])
 
         if ctx.error:
             raise RuntimeError(ctx.error)
@@ -150,6 +178,7 @@ class WatermarkRemovalPipeline:
         progress_callback: Callable[[int, int], None] | None = None,
         fmt: str = "png",
         quality: int = 95,
+        mode: str = "old",
     ) -> list[bytes | str]:
         """
         Process multiple images. Returns list of encoded bytes (success) or
@@ -163,26 +192,37 @@ class WatermarkRemovalPipeline:
             enumerate(images),
         ))
 
-        # Pre-upscale low-res images (CPU+GPU, per-image)
-        self.upscale_step.process_batch(contexts)
+        if mode == "old":
+            self._run_gpu_step(self.seg_step, contexts)
 
-        # GPU steps in sub-batches
-        self._run_gpu_step(self.seg_step, contexts)
-        if progress_callback:
-            progress_callback(total // 3, total)
+            list(self.io_pool.map(lambda ctx: self.alignment_step.process_batch([ctx]), contexts))
+            if progress_callback:
+                progress_callback(total // 4, total)
 
-        self._run_gpu_step(self.removal_step, contexts)
-        if progress_callback:
-            progress_callback(2 * total // 3, total)
+            self._run_gpu_step(self.removal_step, contexts)
+            if progress_callback:
+                progress_callback(2 * total // 4, total)
 
-        # Blending (CPU, per-image) — run in thread pool
-        list(self.io_pool.map(
-            lambda ctx: self.blend_step.process_batch([ctx]),
-            contexts,
-        ))
+            list(self.io_pool.map(lambda ctx: self.blend_step.process_batch([ctx]), contexts))
+            if progress_callback:
+                progress_callback(3 * total // 4, total)
 
-        if progress_callback:
-            progress_callback(total, total)
+            self.upscale_step.process_batch(contexts)
+            if progress_callback:
+                progress_callback(total, total)
+        else:
+            if self.inpaint_step is None:
+                raise RuntimeError("New processing mode not enabled — set new.enabled=true in config")
+            for ctx in contexts:
+                if ctx.error is None:
+                    ctx.result_bgr = ctx.original_bgr.copy()
+            self.upscale_step.process_batch(contexts)
+            for ctx in contexts:
+                if ctx.error is None and ctx.result_bgr is not None:
+                    ctx.original_bgr = ctx.result_bgr.copy()
+            self.inpaint_step.process_batch(contexts)
+            if progress_callback:
+                progress_callback(total, total)
 
         # Encode results in parallel
         def _encode(ctx: ImageContext) -> bytes | str:

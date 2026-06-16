@@ -183,27 +183,32 @@ class UpscaleStep:
     # ── public interface ──────────────────────────────────────────────────────
 
     def process_batch(self, contexts: list[ImageContext]) -> None:
-        """Upscale original_bgr in-place for images below the resolution threshold."""
+        """Upscale result_bgr in-place for images below the resolution threshold."""
         if self.model is None:
             return
         for ctx in contexts:
-            if ctx.error is not None:
+            if ctx.error is not None or ctx.result_bgr is None:
                 continue
-            h, w = ctx.original_bgr.shape[:2]
+            h, w = ctx.result_bgr.shape[:2]
             if max(h, w) <= self.resolution_threshold:
                 try:
-                    ctx.original_bgr = self._enhance(ctx.original_bgr)
-                    ctx.original_size = (ctx.original_bgr.shape[1], ctx.original_bgr.shape[0])
-                    logger.debug("Upscaled %s: %dx%d → %dx%d",
+                    ctx.result_bgr = self._enhance(ctx.result_bgr)
+                    logger.debug("Upscaled result %s: %dx%d → %dx%d",
                                  ctx.image_id, w, h,
-                                 ctx.original_size[0], ctx.original_size[1])
+                                 ctx.result_bgr.shape[1], ctx.result_bgr.shape[0])
                 except Exception as exc:
-                    logger.warning("Upscaling failed for %s: %s — using original",
+                    logger.warning("Upscaling failed for %s: %s — using unscaled result",
                                    ctx.image_id, exc)
 
     # ── internals ─────────────────────────────────────────────────────────────
 
     def _enhance(self, bgr: np.ndarray) -> np.ndarray:
+        h, w = bgr.shape[:2]
+        pad_h = (self.scale - h % self.scale) % self.scale
+        pad_w = (self.scale - w % self.scale) % self.scale
+        if pad_h or pad_w:
+            bgr = cv2.copyMakeBorder(bgr, 0, pad_h, 0, pad_w, cv2.BORDER_REFLECT)
+
         rgb = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB).astype(np.float32) / 255.0
         img_t = torch.from_numpy(rgb).permute(2, 0, 1).unsqueeze(0)
         if self.half:
@@ -214,6 +219,7 @@ class UpscaleStep:
             out_t = self._tile_inference(img_t) if self.tile > 0 else self.model(img_t)
 
         out = out_t.squeeze(0).permute(1, 2, 0).clamp(0, 1).float().cpu().numpy()
+        out = out[:h * self.scale, :w * self.scale]
         return cv2.cvtColor((out * 255).round().astype(np.uint8), cv2.COLOR_RGB2BGR)
 
     def _tile_inference(self, img_t: torch.Tensor) -> torch.Tensor:

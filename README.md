@@ -9,23 +9,22 @@ Microservice that detects and removes watermarks from images using a multi-stage
 
 ## Setup
 
-### Local (using the training venv)
+### Local
 
 ```bash
 cd watermark-service
-source ../watermark-removal/.venv/Scripts/activate
-pip install fastapi uvicorn[standard] python-multipart pydantic-settings
+python -m venv .venv
+source .venv/bin/activate      # Linux/macOS — or .venv\Scripts\activate on Windows
+pip install -e ".[dev]"
 ```
 
-### Local (standalone)
-
+If you have a CUDA GPU, install PyTorch manually before the pip install:
 ```bash
-cd watermark-service
-bash scripts/setup.sh
-source .venv/bin/activate
+pip install torch torchvision --index-url https://download.pytorch.org/whl/cu121
+pip install -e ".[dev]"
 ```
 
-The setup script auto-detects CUDA, installs the right PyTorch build, and symlinks the latest checkpoints from the training repo.
+For convenience, `scripts/setup.sh` automates the full local setup (Linux/macOS only).
 
 ### Docker
 
@@ -33,7 +32,7 @@ The setup script auto-detects CUDA, installs the right PyTorch build, and symlin
 docker compose up
 ```
 
-GPU passthrough is configured automatically. Checkpoints are mounted from `models/`.
+Checkpoints are mounted from `models/`. For GPU support, uncomment the `deploy.resources` block in `docker-compose.yml` and ensure you have the [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html) installed.
 
 ## Checkpoints
 
@@ -137,8 +136,8 @@ Key settings:
 | `inference.mask_expand` | `0` | Default extra mask dilation in px |
 | `batch.max_batch_size` | `8` | Max images per GPU forward pass |
 | `batch.max_concurrent_jobs` | `4` | Max concurrent async batch jobs |
-| `upscale.enabled` | `false` | Enable Real-ESRGAN upscaling |
-| `upscale.model_name` | `RealESRGAN_x4plus` | ESRGAN model variant (see below) |
+| `upscale.enabled` | `true` | Enable Real-ESRGAN upscaling |
+| `upscale.model_name` | `RealESRGAN_x2plus` | ESRGAN model variant (see below) |
 | `upscale.model_path` | `auto` | ESRGAN weights path or `auto` |
 | `upscale.resolution_threshold` | `720` | Upscale images whose longest side is ≤ this (0 = always upscale) |
 | `upscale.tile` | `512` | Tile size for bounded VRAM usage (0 = no tiling) |
@@ -159,7 +158,7 @@ Place the corresponding `.pth` file in `models/` and set `upscale.model_path: "a
 ## Tests
 
 ```bash
-pip install pytest httpx
+pip install -e ".[dev]"
 pytest tests/ -v
 ```
 

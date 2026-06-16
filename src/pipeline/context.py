@@ -14,7 +14,10 @@ class ImageContext:
     original_size: tuple[int, int] = field(init=False) # (W, H)
 
     # filled by SegmentationStep
+    prob_map: np.ndarray | None = None                 # float32 HxW at seg model res (256px)
     mask: np.ndarray | None = None                     # uint8 HxW at original res
+    blend_mask: np.ndarray | None = None               # uint8 HxW at original res
+    roi: dict | None = None                            # crop box in original-image coords
 
     # filled by RemovalStep
     model_pred_bgr: np.ndarray | None = None           # uint8 at model resolution

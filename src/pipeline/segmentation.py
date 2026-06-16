@@ -48,8 +48,9 @@ class SegmentationStep:
             logits = self.model(batch)                         # Bx1xHxW
         probs = torch.sigmoid(logits).squeeze(1).cpu().numpy() # BxHxW
 
-        # Post-process: threshold + resize to original resolution
+        # Post-process: store raw prob map for alignment, then threshold for fallback mask
         for ctx, prob in zip(valid, probs):
-            binary = (prob > self.threshold).astype(np.uint8) * 255
+            ctx.prob_map = prob.astype(np.float32)  # HxW at seg model resolution
             w, h = ctx.original_size
-            ctx.mask = cv2.resize(binary, (w, h), interpolation=cv2.INTER_NEAREST)
+            prob_up = cv2.resize(prob.astype(np.float32), (w, h), interpolation=cv2.INTER_LINEAR)
+            ctx.mask = ((prob_up > self.threshold).astype(np.uint8) * 255)

@@ -72,6 +72,20 @@ def resolve_checkpoints(cfg: "ServiceConfig") -> "ServiceConfig":
         logger.info("Auto-detected removal checkpoint: %s", found)
         cfg.model.removal_checkpoint = found
 
+    if cfg.new.enabled and cfg.new.checkpoint == "auto":
+        candidates = sorted(models_dir.rglob("*.ckpt"), key=lambda p: p.stat().st_mtime)
+        if not candidates:
+            logger.warning(
+                "new.enabled=true but no .ckpt files found in %s — "
+                "LaMa model will not be loaded. Set new.checkpoint explicitly.",
+                models_dir,
+            )
+            cfg.new.checkpoint = ""
+        else:
+            found = str(candidates[-1])
+            logger.info("Auto-detected LaMa checkpoint: %s", found)
+            cfg.new.checkpoint = found
+
     if cfg.upscale.enabled and cfg.upscale.model_path == "auto":
         candidate = models_dir / f"{cfg.upscale.model_name}.pth"
         if candidate.exists():
@@ -95,10 +109,15 @@ class ModelConfig(BaseModel):
     seg_checkpoint: str = "auto"
     removal_checkpoint: str = "auto"
     seg_image_size: int = 256
-    removal_image_size: int = 256
+    removal_image_width: int = 512
+    removal_image_height: int = 256
+    removal_crop_aspect_ratio: float = 3.54
+    removal_crop_margin_ratio: float = 0.12
+    removal_crop_min_width_ratio: float = 0.50
     seg_encoder: str = "efficientnet-b0"
     removal_base_channels: int = 32
     removal_depth: int = 4
+    watermark_path: str = "./models/watermark.png"
 
 
 class UpscaleConfig(BaseModel):
@@ -121,6 +140,16 @@ class InferenceConfig(BaseModel):
     amp: bool = True
 
 
+class NewVariantConfig(BaseModel):
+    enabled: bool = False
+    method: str = "telea"
+    inpaint_width: int = 114
+    inpaint_height: int = 48
+    inpaint_radius: int = 3
+    inpaint_size: int = 256
+    checkpoint: str = ""
+
+
 class BatchConfig(BaseModel):
     max_batch_size: int = 8
     io_workers: int = 4
@@ -139,6 +168,7 @@ class ServiceConfig(BaseModel):
     upscale: UpscaleConfig = UpscaleConfig()
     batch: BatchConfig = BatchConfig()
     server: ServerConfig = ServerConfig()
+    new: NewVariantConfig = NewVariantConfig()
 
 
 def load_config(path: str | None = None) -> ServiceConfig:

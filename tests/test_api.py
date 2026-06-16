@@ -55,6 +55,23 @@ class TestHealthEndpoint:
         assert data["status"] == "ok"
         assert data["models_loaded"] is True
 
+    def test_health_cuda(self, mock_pipeline):
+        mock_pipeline.device.type = "cuda"
+
+        class _Props:
+            total_memory = 8 * 1024 * 1024 * 1024
+
+        app = _make_test_app(mock_pipeline)
+        with patch("src.api.routes.torch.cuda.memory_allocated", return_value=512 * 1024 * 1024), \
+             patch("src.api.routes.torch.cuda.get_device_properties", return_value=_Props()):
+            with TestClient(app) as client:
+                resp = client.get("/api/v1/health")
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["gpu_memory_used_mb"] == 512.0
+        assert data["gpu_memory_total_mb"] == 8192.0
+
 
 class TestProcessEndpoint:
     def test_single_image(self, client, sample_image_bytes):

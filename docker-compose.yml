@@ -3,8 +3,17 @@ services:
     build: .
     ports:
       - "8000:8000"
+    restart: unless-stopped
     volumes:
       - ./models:/app/models:ro
       - ./config:/app/config:ro
     environment:
       - WM_CONFIG_PATH=/app/config/default.yaml
+    # Uncomment for NVIDIA GPU support:
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - driver: nvidia
+    #           count: all
+    #           capabilities: [gpu]
