@@ -1,4 +1,4 @@
-# Vendored from watermark-removal/wm_shared/marks/localize.py (commit 5710cb5). Keep in sync.
+# Vendored from watermark-removal/wm_shared/marks/localize.py (commit 7edbb43). Keep in sync.
 """
 Locate a known mark inside an inference window.
 
@@ -30,7 +30,7 @@ def _parabola(m1: float, c: float, p1: float) -> float:
 
 
 def _match(window_detail: np.ndarray, mark: np.ndarray,
-           box: tuple[int, int, int, int] | None) -> tuple[float, float, float]:
+           box: tuple[int, int, int, int] | None, mark_detail: np.ndarray | None = None) -> tuple[float, float, float]:
     """NCC peak of the mark's detail layer, searched only inside box = (x0, y0, x1, y1) of origins."""
     if box is not None:
         x0, y0, x1, y1 = box
@@ -38,12 +38,25 @@ def _match(window_detail: np.ndarray, mark: np.ndarray,
         window_detail = window_detail[y0:y1 + mh, x0:x1 + mw]
     else:
         x0 = y0 = 0
-    score = cv2.matchTemplate(window_detail, detail(mark), cv2.TM_CCOEFF_NORMED)
+    score = cv2.matchTemplate(window_detail, detail(mark) if mark_detail is None else mark_detail,
+                              cv2.TM_CCOEFF_NORMED)
     a = np.abs(score)
     y, x = np.unravel_index(int(a.argmax()), a.shape)
     fx = _parabola(a[y, x - 1], a[y, x], a[y, x + 1]) if 0 < x < a.shape[1] - 1 else 0.0
     fy = _parabola(a[y - 1, x], a[y, x], a[y + 1, x]) if 0 < y < a.shape[0] - 1 else 0.0
     return x0 + x + fx, y0 + y + fy, float(score[y, x])
+
+
+_LOGO_CACHE: dict = {}
+
+
+def _scaled_logo(profile: MarkProfile, scale: float) -> tuple[np.ndarray, np.ndarray]:
+    """The logo at a scale and its detail layer (the same for every photo, so cached)."""
+    key = (id(profile), scale)
+    if key not in _LOGO_CACHE:
+        logo = profile.logo if scale == 1.0 else profile.place(profile.logo, scale=scale)
+        _LOGO_CACHE[key] = (logo, detail(logo))
+    return _LOGO_CACHE[key]
 
 
 def search_box(profile: MarkProfile, prior: tuple[float, float], window_shape: tuple[int, int],
@@ -128,8 +141,8 @@ def localize(window_rgb: np.ndarray, profile: MarkProfile, listing_id: str,
     # logo refine, also over a few scales (the stamped size varies by a few % between photos)
     best = None
     for sc in SCALES:
-        logo = profile.logo if sc == 1.0 else profile.place(profile.logo, scale=sc)
-        x, y, s = _match(wd, logo, _local_box(coarse[0], coarse[1], profile, wd.shape))
+        logo, logo_detail = _scaled_logo(profile, sc)
+        x, y, s = _match(wd, logo, _local_box(coarse[0], coarse[1], profile, wd.shape), logo_detail)
         if best is None or abs(s) > abs(best[2]):
             best = (x, y, s, sc)
     x, y, s, scale = best
