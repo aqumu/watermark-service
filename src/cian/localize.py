@@ -1,4 +1,4 @@
-# Vendored from watermark-removal/wm_shared/marks/localize.py (commit 7edbb43). Keep in sync.
+# Vendored from watermark-removal/wm_shared/marks/localize.py (commits 6c1b6f9, f5bfe5c, febb794). Keep in sync.
 """
 Locate a known mark inside an inference window.
 
@@ -57,6 +57,24 @@ def _scaled_logo(profile: MarkProfile, scale: float) -> tuple[np.ndarray, np.nda
         logo = profile.logo if scale == 1.0 else profile.place(profile.logo, scale=scale)
         _LOGO_CACHE[key] = (logo, detail(logo))
     return _LOGO_CACHE[key]
+
+
+def _pad_for_frame(wd: np.ndarray, profile: MarkProfile, prior: tuple[float, float] | None,
+                   margin: float = 3.0) -> np.ndarray:
+    """Zero-pad the detail layer at the bottom/right so every candidate frame fits.
+
+    On short or narrow photos the JPEG-grid-snapped window can end before the
+    frame does (the frame's lower margin is empty, so the mark itself is inside).
+    """
+    if prior is None:
+        return wd
+    fw, fh = profile.frame_size
+    need_w = int(np.ceil(prior[0] + profile.jitter["x"][1] + margin)) + fw + 4
+    need_h = int(np.ceil(prior[1] + profile.jitter["y"][1] + margin)) + fh + 4
+    h, w = wd.shape
+    if need_w <= w and need_h <= h:
+        return wd
+    return np.pad(wd, ((0, max(0, need_h - h)), (0, max(0, need_w - w))))
 
 
 def search_box(profile: MarkProfile, prior: tuple[float, float], window_shape: tuple[int, int],
@@ -131,7 +149,7 @@ def localize(window_rgb: np.ndarray, profile: MarkProfile, listing_id: str,
     prior: the expected frame origin inside the window; the coarse search is
     limited to the profile's jitter range around it (plus a small margin).
     """
-    wd = detail(window_rgb.astype(np.float32) @ _LUMA)
+    wd = _pad_for_frame(detail(window_rgb.astype(np.float32) @ _LUMA), profile, prior)
     box = search_box(profile, prior, wd.shape) if prior is not None else None
     coarse = None
     for st in styles or list(profile.styles):
