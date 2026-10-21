@@ -2,8 +2,8 @@
 
 FastAPI microservice that removes watermarks from images. Three processing modes:
 
-- **"old" mode** — Avito: segmentation, template alignment, residual removal, feather blending
-- **"new" mode** — upscaling + fixed-region inpainting (Telea or LaMa)
+- **"old" mode** — Avito's original (large) watermark, now out of circulation: segmentation, template alignment, residual removal, feather blending
+- **"new" mode** — Avito's newer, small watermark: upscaling + fixed-region inpainting (Telea or LaMa)
 - **"cian" mode** — Cian: the mark is located from the image size and the listing ID and removed by a small ONNX model on CPU (needs the listing ID of each image)
 
 ## Quick start
