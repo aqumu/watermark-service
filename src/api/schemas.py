@@ -6,8 +6,9 @@ from pydantic import BaseModel
 
 
 class ProcessingMode(str, Enum):
-    old = "old"
-    new = "new"
+    old = "old"     # Avito: segmentation + removal
+    new = "new"     # upscale + fixed-region inpainting
+    cian = "cian"   # Cian: needs the listing ID of each image
 
 
 class HealthResponse(BaseModel):

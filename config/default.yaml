@@ -54,6 +54,17 @@ new:
   # Supports "auto" (scans models_dir for big-lama/**/*.ckpt) or explicit path.
   checkpoint: "auto"
 
+cian:
+  # Cian watermark (mode=cian, needs the listing ID per image). Off by default.
+  enabled: false
+  # "auto" → newest models_dir/model_cian_*.onnx; or an explicit path
+  onnx: "auto"
+  # "auto" → models_dir/cian (mark.json, mark.npz, fonts/ from watermark-removal)
+  mark_dir: "auto"
+  threads: 0          # ONNX Runtime threads (0 = runtime default)
+  batch_size: 8       # images per model call
+  hint_scale: 8.0     # must match the model's training config
+
 batch:
   max_batch_size: 8
   io_workers: 4

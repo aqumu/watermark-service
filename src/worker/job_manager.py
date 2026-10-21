@@ -34,14 +34,14 @@ class JobManager:
         self._lock = threading.Lock()
 
     def submit(self, images: list[bytes], pipeline, fmt: str = "png",
-               quality: int = 95, mode: str = "old") -> str:
+               quality: int = 95, mode: str = "old", listing_ids: list[str] | None = None) -> str:
         job_id = uuid.uuid4().hex[:16]
         state = JobState(job_id=job_id, total=len(images))
 
         with self._lock:
             self.jobs[job_id] = state
 
-        self.executor.submit(self._run, state, images, pipeline, fmt, quality, mode)
+        self.executor.submit(self._run, state, images, pipeline, fmt, quality, mode, listing_ids)
         logger.info("Job %s submitted: %d images (%s mode)", job_id, len(images), mode)
         return job_id
 
@@ -49,7 +49,7 @@ class JobManager:
         return self.jobs.get(job_id)
 
     def _run(self, state: JobState, images: list[bytes], pipeline,
-             fmt: str, quality: int, mode: str = "old"):
+             fmt: str, quality: int, mode: str = "old", listing_ids: list[str] | None = None):
         state.status = "processing"
         try:
             results = pipeline.process_batch(
@@ -58,6 +58,7 @@ class JobManager:
                 fmt=fmt,
                 quality=quality,
                 mode=mode,
+                listing_ids=listing_ids,
             )
             state.results = results
             state.failed = sum(1 for r in results if isinstance(r, str))

@@ -1,9 +1,10 @@
 # Watermark Removal Service
 
-FastAPI microservice that removes watermarks from images. Two processing modes:
+FastAPI microservice that removes watermarks from images. Three processing modes:
 
-- **"old" mode** — segmentation, template alignment, residual removal, feather blending
+- **"old" mode** — Avito: segmentation, template alignment, residual removal, feather blending
 - **"new" mode** — upscaling + fixed-region inpainting (Telea or LaMa)
+- **"cian" mode** — Cian: the mark is located from the image size and the listing ID and removed by a small ONNX model on CPU (needs the listing ID of each image)
 
 ## Quick start
 
@@ -40,6 +41,11 @@ Place checkpoints in `models/` using these naming conventions:
 | Watermark template | `watermark.png` | Yes (RGBA) |
 | Real-ESRGAN upscaler | `RealESRGAN_x2plus.pth` | Only if upscale enabled |
 | LaMa inpainter | `big-lama/**/*.ckpt` | Only if new.method=lama |
+| Cian removal model | `model_cian_*.onnx` | Only if cian.enabled |
+| Cian mark assets | `cian/mark.json`, `cian/mark.npz`, `cian/fonts/` | Only if cian.enabled |
+
+The Cian model and mark assets are produced by `training/export_for_service.py` in the
+watermark-removal repo (`--out <this repo>/models`).
 
 On startup, the service auto-detects the newest checkpoint for each prefix (by modification time). Set an explicit path in `config/default.yaml` to pin a version:
 
@@ -76,13 +82,15 @@ Process a single image. Returns the cleaned image directly.
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
 | `image` | file | — | Input image (required) |
-| `mode` | string | `old` | `"old"` or `"new"` |
+| `mode` | string | `old` | `"old"`, `"new"` or `"cian"` |
+| `listing_id` | string | — | Cian listing ID (required for `mode=cian`) |
 | `output_format` | string | `png` | `"png"`, `"jpeg"`, or `"webp"` |
 | `quality` | int | `95` | 1–100, for jpeg/webp |
 
 ```bash
 curl -X POST -F "image=@photo.jpg" "http://localhost:8000/api/v1/process" -o result.png
 curl -X POST -F "image=@photo.jpg" "http://localhost:8000/api/v1/process?mode=new&output_format=jpeg&quality=90" -o result.jpg
+curl -X POST -F "image=@photo.jpg" "http://localhost:8000/api/v1/process?mode=cian&listing_id=333768830" -o result.png
 ```
 
 ### `POST /api/v1/process/batch`
@@ -92,13 +100,16 @@ Process multiple images synchronously. Returns a ZIP archive.
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
 | `images` | files | — | Multiple image files (required) |
-| `mode` | string | `old` | `"old"` or `"new"` |
+| `mode` | string | `old` | `"old"`, `"new"` or `"cian"` |
+| `listing_ids` | form field | — | `mode=cian`: comma-separated listing IDs, one per image, in upload order |
 | `output_format` | string | `png` | `"png"`, `"jpeg"`, or `"webp"` |
 | `quality` | int | `95` | 1–100 |
 
 ```bash
 curl -X POST -F "images=@a.jpg" -F "images=@b.jpg" \
   "http://localhost:8000/api/v1/process/batch" -o results.zip
+curl -X POST -F "images=@a.jpg" -F "images=@b.jpg" -F "listing_ids=333768830,329288428" \
+  "http://localhost:8000/api/v1/process/batch?mode=cian" -o results.zip
 ```
 
 ### `POST /api/v1/process/batch/async`
@@ -108,7 +119,8 @@ Submit a large batch for background processing. Returns a job ID.
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
 | `images` | files | — | Multiple image files (required) |
-| `mode` | string | `old` | `"old"` or `"new"` |
+| `mode` | string | `old` | `"old"`, `"new"` or `"cian"` |
+| `listing_ids` | form field | — | `mode=cian`: comma-separated listing IDs, one per image, in upload order |
 | `output_format` | string | `png` | `"png"`, `"jpeg"`, or `"webp"` |
 | `quality` | int | `95` | 1–100 |
 
@@ -163,6 +175,22 @@ Input → Upscale → Inpaint → Output
 2. **Inpaint** (CPU/GPU) — Inpaints a fixed rectangle at the bottom-right corner of the image. Two methods:
    - `"telea"` (CPU) — OpenCV Telea inpainting, fast, no model needed.
    - `"lama"` (GPU) — LaMa FFCResNetGenerator, better quality, requires a checkpoint.
+
+### "cian" mode pipeline
+
+```
+Input + listing ID → Window → Locate mark → Render hint → ONNX model → Paste back → Output
+```
+
+1. **Window** (CPU) — the Cian mark sits at a position that follows the image size; a fixed 352×224 window around it is cut out (aligned to the JPEG 16-px grid). The rest of the image is never touched.
+2. **Locate** (CPU) — template matching finds the logo's exact position and size, then the ID line's style (bold / regular / none) and placement for the listing's ID.
+3. **Hint** (CPU) — the exact mark for that ID is rendered there; the model input is the window, the exact algebraic inverse of the mark, and the mark itself.
+4. **Model** (CPU, ONNX Runtime) — predicts a correction on top (JPEG damage around the letters, per-photo deviations of the mark); images are batched.
+5. **Paste back** — only the window changes. No upscaling.
+
+A photo re-used from another listing can carry that listing's ID; the model tolerates a wrong ID hint and removes a second mark next to the listing's own, but results are best with the right ID.
+
+Enable it with `cian.enabled: true` (see `config/default.yaml`); the other modes are unaffected.
 
 ## Configuration
 
@@ -231,6 +259,17 @@ Supported upscaler variants:
 | `batch.max_batch_size` | `8` | Max images per GPU forward pass |
 | `batch.io_workers` | `4` | Thread pool for I/O-bound operations |
 | `batch.max_concurrent_jobs` | `4` | Max concurrent async batch jobs |
+
+### Cian settings ("cian" mode)
+
+| Key | Default | Description |
+|-----|---------|-------------|
+| `cian.enabled` | `false` | Load the Cian model at startup and accept `mode=cian` |
+| `cian.onnx` | `"auto"` | Newest `models_dir/model_cian_*.onnx`, or an explicit path |
+| `cian.mark_dir` | `"auto"` | `models_dir/cian` (mark.json, mark.npz, fonts/) |
+| `cian.threads` | `0` | ONNX Runtime threads (0 = runtime default) |
+| `cian.batch_size` | `8` | Images per model call |
+| `cian.hint_scale` | `8.0` | Must match the model's training config |
 
 ## Project structure
 

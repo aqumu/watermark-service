@@ -5,7 +5,7 @@ import logging
 import zipfile
 
 import torch
-from fastapi import APIRouter, Depends, File, Query, UploadFile
+from fastapi import APIRouter, Depends, File, Form, Query, UploadFile
 from fastapi.responses import Response
 
 from src.api.dependencies import get_pipeline
@@ -22,6 +22,18 @@ from src.worker.job_manager import get_job_manager
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
+
+
+def _parse_listing_ids(raw: str | None) -> list[str] | None:
+    """Comma-separated listing IDs, one per uploaded image, in upload order."""
+    if raw is None:
+        return None
+    return [v.strip() for v in raw.split(",") if v.strip()]
+
+
+def _bad_request(detail: str) -> Response:
+    return Response(content=ErrorResponse(detail=detail).model_dump_json(), status_code=400,
+                    media_type="application/json")
 
 
 # ── Health ────────────────────────────────────────────────────────────────────
@@ -50,12 +62,14 @@ async def process_single(
     output_format: str = Query("png", pattern="^(png|jpeg|webp)$"),
     quality: int = Query(95, ge=1, le=100),
     mode: ProcessingMode = Query("old"),
+    listing_id: str | None = Query(None, description="Cian listing ID (required for mode=cian)"),
     pipeline: WatermarkRemovalPipeline = Depends(get_pipeline),
 ):
     """Process a single image. Returns the cleaned image directly."""
     data = await image.read()
     try:
-        result_bytes = pipeline.process_single(data, fmt=output_format, quality=quality, mode=mode.value)
+        result_bytes = pipeline.process_single(data, fmt=output_format, quality=quality, mode=mode.value,
+                                               listing_id=listing_id)
     except (ValueError, RuntimeError) as e:
         return Response(
             content=ErrorResponse(detail=str(e)).model_dump_json(),
@@ -75,12 +89,17 @@ async def process_batch(
     output_format: str = Query("png", pattern="^(png|jpeg|webp)$"),
     quality: int = Query(95, ge=1, le=100),
     mode: ProcessingMode = Query("old"),
+    listing_ids: str | None = Form(None, description="mode=cian: comma-separated listing IDs, one per image"),
     pipeline: WatermarkRemovalPipeline = Depends(get_pipeline),
 ):
     """Process multiple images synchronously. Returns a ZIP archive."""
     image_data = [await f.read() for f in images]
 
-    results = pipeline.process_batch(image_data, fmt=output_format, quality=quality, mode=mode.value)
+    try:
+        results = pipeline.process_batch(image_data, fmt=output_format, quality=quality, mode=mode.value,
+                                         listing_ids=_parse_listing_ids(listing_ids))
+    except (ValueError, RuntimeError) as e:
+        return _bad_request(str(e))
 
     ext = {"png": ".png", "jpeg": ".jpg", "webp": ".webp"}[output_format]
 
@@ -110,13 +129,19 @@ async def process_batch_async(
     output_format: str = Query("png", pattern="^(png|jpeg|webp)$"),
     quality: int = Query(95, ge=1, le=100),
     mode: ProcessingMode = Query("old"),
+    listing_ids: str | None = Form(None, description="mode=cian: comma-separated listing IDs, one per image"),
     pipeline: WatermarkRemovalPipeline = Depends(get_pipeline),
 ):
     """Submit a large batch for background processing. Returns a job ID."""
     image_data = [await f.read() for f in images]
+    ids = _parse_listing_ids(listing_ids)
+    if mode.value == "cian" and (ids is None or len(ids) != len(image_data)):
+        return _bad_request(f"mode=cian needs one listing ID per image ({len(image_data)} images, "
+                            f"{len(ids or [])} listing IDs)")
 
     manager = get_job_manager()
-    job_id = manager.submit(image_data, pipeline, fmt=output_format, quality=quality, mode=mode.value)
+    job_id = manager.submit(image_data, pipeline, fmt=output_format, quality=quality, mode=mode.value,
+                            listing_ids=ids)
 
     return JobSubmitResponse(job_id=job_id, total=len(image_data))
 

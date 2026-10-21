@@ -26,6 +26,13 @@ Supported model names and their expected weight files:
 
 Set upscale.model_path to "auto" to detect ``{model_name}.pth`` in models_dir
 automatically, or provide an explicit path.
+
+Cian watermark (optional, mode "cian")
+--------------------------------------
+Set cian.enabled = true. With cian.onnx = "auto" the newest
+``model_cian_*.onnx`` in models_dir is used; cian.mark_dir = "auto" means
+``models_dir/cian`` (mark.json, mark.npz, fonts/ — exported by the
+watermark-removal repo). Requests in this mode need the listing ID of each image.
 """
 
 import logging
@@ -40,9 +47,9 @@ logger = logging.getLogger(__name__)
 
 # ── auto-detection helper ─────────────────────────────────────────────────────
 
-def _find_latest(directory: Path, prefix: str) -> str | None:
-    """Return the path of the newest ``<prefix>*.pth`` file in *directory*."""
-    matches = sorted(directory.glob(f"{prefix}*.pth"), key=lambda p: p.stat().st_mtime)
+def _find_latest(directory: Path, prefix: str, suffix: str = ".pth") -> str | None:
+    """Return the path of the newest ``<prefix>*<suffix>`` file in *directory*."""
+    matches = sorted(directory.glob(f"{prefix}*{suffix}"), key=lambda p: p.stat().st_mtime)
     if not matches:
         return None
     return str(matches[-1])
@@ -99,6 +106,21 @@ def resolve_checkpoints(cfg: "ServiceConfig") -> "ServiceConfig":
             )
             cfg.upscale.model_path = ""   # sentinel: model unavailable
 
+    if cfg.cian.enabled:
+        if cfg.cian.onnx == "auto":
+            found = _find_latest(models_dir, "model_cian_", ".onnx")
+            if found is None:
+                raise FileNotFoundError(
+                    f"cian.enabled=true but no model_cian_*.onnx found in {models_dir}. "
+                    "Place the exported model there or set cian.onnx explicitly."
+                )
+            logger.info("Auto-detected Cian model: %s", found)
+            cfg.cian.onnx = found
+        if cfg.cian.mark_dir == "auto":
+            cfg.cian.mark_dir = str(models_dir / "cian")
+        if not (Path(cfg.cian.mark_dir) / "mark.json").exists():
+            raise FileNotFoundError(f"cian.enabled=true but {cfg.cian.mark_dir}/mark.json is missing")
+
     return cfg
 
 
@@ -150,6 +172,15 @@ class NewVariantConfig(BaseModel):
     checkpoint: str = ""
 
 
+class CianConfig(BaseModel):
+    enabled: bool = False
+    onnx: str = "auto"          # "auto" → newest models_dir/model_cian_*.onnx
+    mark_dir: str = "auto"      # "auto" → models_dir/cian (mark.json, mark.npz, fonts/)
+    threads: int = 0            # ONNX Runtime intra-op threads (0 = runtime default)
+    batch_size: int = 8         # images per model call
+    hint_scale: float = 8.0     # must match the model's training config
+
+
 class BatchConfig(BaseModel):
     max_batch_size: int = 8
     io_workers: int = 4
@@ -169,6 +200,7 @@ class ServiceConfig(BaseModel):
     batch: BatchConfig = BatchConfig()
     server: ServerConfig = ServerConfig()
     new: NewVariantConfig = NewVariantConfig()
+    cian: CianConfig = CianConfig()
 
 
 def load_config(path: str | None = None) -> ServiceConfig:
