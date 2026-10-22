@@ -49,11 +49,12 @@ watermark-removal repo (`--out <this repo>/models`). **Deploy them together**: t
 trained on the mark model in `cian/mark.json` (logo shadow, text-line strength), and the hint
 the service renders from it must match. Keep a single `model_cian_*.onnx` in `models/`.
 
-Current release: `model_cian_ft7.onnx` (8.5 MB, full-resolution teacher "ft7"). It removes the
-mark down to the measurement noise floor on real photos, including the logo's shadow and the
-"ID" line, but it is the heavy model: ~280 ms per image on one 6-core desktop CPU with all
-threads, ~1.5-3 images/s for the whole machine. Lighter students (~30-40 images/s) exist but
-leave faint digit ghosts at high contrast.
+Current release: `model_cian_c_v3.onnx` (2.3 MB, distilled student "C v3"). ~31 ms per image
+on one 6-core desktop CPU with all threads, ~30-34 images/s for the whole machine. It removes
+the logo, its shadow and the "ID" line at normal viewing; faint digit ghosts can remain,
+visible only at strongly increased contrast. The full-resolution teacher (`model_cian_ft7.onnx`,
+8.5 MB) is cleaner at high contrast but ~10-20x slower (~1.5-3 images/s); it uses the same
+mark assets and can be swapped in by replacing the model file.
 
 On startup, the service auto-detects the newest checkpoint for each prefix (by modification time). Set an explicit path in `config/default.yaml` to pin a version:
 
