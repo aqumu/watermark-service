@@ -45,7 +45,15 @@ Place checkpoints in `models/` using these naming conventions:
 | Cian mark assets | `cian/mark.json`, `cian/mark.npz`, `cian/fonts/` | Only if cian.enabled |
 
 The Cian model and mark assets are produced by `training/export_for_service.py` in the
-watermark-removal repo (`--out <this repo>/models`).
+watermark-removal repo (`--out <this repo>/models`). **Deploy them together**: the model is
+trained on the mark model in `cian/mark.json` (logo shadow, text-line strength), and the hint
+the service renders from it must match. Keep a single `model_cian_*.onnx` in `models/`.
+
+Current release: `model_cian_ft7.onnx` (8.5 MB, full-resolution teacher "ft7"). It removes the
+mark down to the measurement noise floor on real photos, including the logo's shadow and the
+"ID" line, but it is the heavy model: ~280 ms per image on one 6-core desktop CPU with all
+threads, ~1.5-3 images/s for the whole machine. Lighter students (~30-40 images/s) exist but
+leave faint digit ghosts at high contrast.
 
 On startup, the service auto-detects the newest checkpoint for each prefix (by modification time). Set an explicit path in `config/default.yaml` to pin a version:
 
@@ -188,7 +196,7 @@ Input + listing ID → Window → Locate mark → Render hint → ONNX model →
 4. **Model** (CPU, ONNX Runtime) — predicts a correction on top (JPEG damage around the letters, per-photo deviations of the mark); images are batched.
 5. **Paste back** — only the window changes. No upscaling.
 
-A photo re-used from another listing can carry that listing's ID; the model tolerates a wrong ID hint and removes a second mark next to the listing's own, but results are best with the right ID.
+A photo re-used from another listing can carry that listing's ID; the model tolerates a wrong ID hint, but results are best with the right ID. A second, older mark from another listing (re-used photos, ~1%) is only partly removed: its ID is unknown.
 
 Enable it with `cian.enabled: true` (see `config/default.yaml`); the other modes are unaffected.
 
