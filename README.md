@@ -1,10 +1,11 @@
 # Watermark Removal Service
 
-FastAPI microservice that removes watermarks from images. Three processing modes:
+FastAPI microservice that removes watermarks from images. Processing modes:
 
-- **"old" mode** — Avito's original (large) watermark, now out of circulation: segmentation, template alignment, residual removal, feather blending
-- **"new" mode** — Avito's newer, small watermark: upscaling + fixed-region inpainting (Telea or LaMa)
+- **"avito" mode** — Avito's current small watermark (bottom-right logo): a small ONNX model on CPU on the image's corner window; the mark sits at fixed pixels, so nothing has to be detected
+- **"legacy_avito" mode** (alias `old`) — Avito's original (large) watermark, now out of circulation: segmentation, template alignment, residual removal, feather blending
 - **"cian" mode** — Cian: the mark is located from the image size and the listing ID and removed by a small ONNX model on CPU (needs the listing ID of each image)
+- **"new" mode** — the earlier treatment of the small Avito watermark (upscaling + fixed-region inpainting, Telea or LaMa), kept for existing callers; use `avito` instead
 
 ## Quick start
 
@@ -91,7 +92,7 @@ Process a single image. Returns the cleaned image directly.
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
 | `image` | file | — | Input image (required) |
-| `mode` | string | `old` | `"old"`, `"new"` or `"cian"` |
+| `mode` | string | `old` | `"avito"`, `"legacy_avito"` (= `"old"`), `"cian"` or `"new"` |
 | `listing_id` | string | — | Cian listing ID (required for `mode=cian`) |
 | `output_format` | string | `png` | `"png"`, `"jpeg"`, or `"webp"` |
 | `quality` | int | `95` | 1–100, for jpeg/webp |
@@ -109,7 +110,7 @@ Process multiple images synchronously. Returns a ZIP archive.
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
 | `images` | files | — | Multiple image files (required) |
-| `mode` | string | `old` | `"old"`, `"new"` or `"cian"` |
+| `mode` | string | `old` | `"avito"`, `"legacy_avito"` (= `"old"`), `"cian"` or `"new"` |
 | `listing_ids` | form field | — | `mode=cian`: comma-separated listing IDs, one per image, in upload order |
 | `output_format` | string | `png` | `"png"`, `"jpeg"`, or `"webp"` |
 | `quality` | int | `95` | 1–100 |
@@ -128,7 +129,7 @@ Submit a large batch for background processing. Returns a job ID.
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
 | `images` | files | — | Multiple image files (required) |
-| `mode` | string | `old` | `"old"`, `"new"` or `"cian"` |
+| `mode` | string | `old` | `"avito"`, `"legacy_avito"` (= `"old"`), `"cian"` or `"new"` |
 | `listing_ids` | form field | — | `mode=cian`: comma-separated listing IDs, one per image, in upload order |
 | `output_format` | string | `png` | `"png"`, `"jpeg"`, or `"webp"` |
 | `quality` | int | `95` | 1–100 |
@@ -254,7 +255,7 @@ Supported upscaler variants:
 | Key | Default | Description |
 |-----|---------|-------------|
 | `new.enabled` | `true` | Enable "new" processing mode |
-| `new.method` | `lama` | `"telea"` or `"lama"` |
+| `new.method` | `lama` | Compatibility fallback only: `"telea"` or `"lama"` |
 | `new.inpaint_width` | `114` | Width of the fixed inpaint rectangle |
 | `new.inpaint_height` | `48` | Height of the fixed inpaint rectangle |
 | `new.inpaint_radius` | `3` | Telea inpainting radius |
@@ -268,6 +269,17 @@ Supported upscaler variants:
 | `batch.max_batch_size` | `8` | Max images per GPU forward pass |
 | `batch.io_workers` | `4` | Thread pool for I/O-bound operations |
 | `batch.max_concurrent_jobs` | `4` | Max concurrent async batch jobs |
+
+### Avito settings ("avito" mode)
+
+| Key | Default | Description |
+|---|---|---|
+| `avito.enabled` | `false` | Load the small-logo ONNX model |
+| `avito.onnx` | `auto` | Newest `model_avito_*.onnx`, or an explicit path |
+| `avito.mark_dir` | `auto` | `models/avito/` (mark.json, mark.npz), exported with the model |
+| `avito.threads` | `0` | ONNX Runtime intra-op threads |
+| `avito.batch_size` | `8` | Images per model call |
+| `avito.hint_scale` | `8.0` | Must match the training configuration |
 
 ### Cian settings ("cian" mode)
 

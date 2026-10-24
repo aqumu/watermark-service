@@ -121,6 +121,21 @@ def resolve_checkpoints(cfg: "ServiceConfig") -> "ServiceConfig":
         if not (Path(cfg.cian.mark_dir) / "mark.json").exists():
             raise FileNotFoundError(f"cian.enabled=true but {cfg.cian.mark_dir}/mark.json is missing")
 
+    if cfg.avito.enabled:
+        if cfg.avito.onnx == "auto":
+            found = _find_latest(models_dir, "model_avito_", ".onnx")
+            if found is None:
+                raise FileNotFoundError(
+                    f"avito.enabled=true but no model_avito_*.onnx found in {models_dir}. "
+                    "Place the exported model there or set avito.onnx explicitly."
+                )
+            logger.info("Auto-detected Avito model: %s", found)
+            cfg.avito.onnx = found
+        if cfg.avito.mark_dir == "auto":
+            cfg.avito.mark_dir = str(models_dir / "avito")
+        if not (Path(cfg.avito.mark_dir) / "mark.json").exists():
+            raise FileNotFoundError(f"avito.enabled=true but {cfg.avito.mark_dir}/mark.json is missing")
+
     return cfg
 
 
@@ -181,6 +196,15 @@ class CianConfig(BaseModel):
     hint_scale: float = 8.0     # must match the model's training config
 
 
+class AvitoConfig(BaseModel):
+    enabled: bool = False
+    onnx: str = "auto"           # "auto" -> newest models_dir/model_avito_*.onnx
+    mark_dir: str = "auto"       # "auto" -> models_dir/avito
+    threads: int = 0
+    batch_size: int = 8
+    hint_scale: float = 8.0
+
+
 class BatchConfig(BaseModel):
     max_batch_size: int = 8
     io_workers: int = 4
@@ -200,6 +224,7 @@ class ServiceConfig(BaseModel):
     batch: BatchConfig = BatchConfig()
     server: ServerConfig = ServerConfig()
     new: NewVariantConfig = NewVariantConfig()
+    avito: AvitoConfig = AvitoConfig()
     cian: CianConfig = CianConfig()
 
 

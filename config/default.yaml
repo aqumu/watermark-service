@@ -54,6 +54,16 @@ new:
   # Supports "auto" (scans models_dir for big-lama/**/*.ckpt) or explicit path.
   checkpoint: "auto"
 
+avito:
+  # Small Avito logo removal. Enable after installing model_avito_*.onnx and
+  # the matching models/avito/ mark assets from watermark-removal.
+  enabled: false
+  onnx: "auto"
+  mark_dir: "auto"
+  threads: 0
+  batch_size: 8
+  hint_scale: 8.0
+
 cian:
   # Cian watermark (mode=cian, needs the listing ID per image). Off by default.
   enabled: false

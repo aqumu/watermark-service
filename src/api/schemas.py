@@ -6,9 +6,12 @@ from pydantic import BaseModel
 
 
 class ProcessingMode(str, Enum):
-    old = "old"     # Avito: segmentation + removal
-    new = "new"     # upscale + fixed-region inpainting
-    cian = "cian"   # Cian: needs the listing ID of each image
+    avito = "avito"                 # Small Avito logo: anchored ONNX model
+    legacy_avito = "legacy_avito"   # Previous large Avito pipeline
+    cian = "cian"                   # Cian: needs the listing ID of each image
+    # Compatibility aliases for existing callers.
+    new = "new"
+    old = "old"
 
 
 class HealthResponse(BaseModel):
