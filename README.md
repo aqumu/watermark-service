@@ -272,6 +272,9 @@ Supported upscaler variants:
 
 ### Avito settings ("avito" mode)
 
+Current release: `model_avito_v1.onnx` (8.5 MB) with `models/avito/` (mark.json,
+mark.npz), both from the same `watermark-removal` export. Set `avito.enabled: true`.
+
 | Key | Default | Description |
 |---|---|---|
 | `avito.enabled` | `false` | Load the small-logo ONNX model |
