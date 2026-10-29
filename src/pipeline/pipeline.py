@@ -111,6 +111,29 @@ class WatermarkRemovalPipeline:
                 amp=config.inference.amp,
             )
 
+        self.cian_step = None
+        if config.cian.enabled:
+            from pathlib import Path
+
+            from src.cian import CianRemover, load_mark
+            from src.pipeline.cian import CianStep
+            mark_dir = Path(config.cian.mark_dir)
+            profile = load_mark(mark_dir.name, mark_dir.parent)
+            remover = CianRemover(config.cian.onnx, profile, threads=config.cian.threads,
+                                  hint_scale=config.cian.hint_scale)
+            self.cian_step = CianStep(remover, config.cian.batch_size, self.io_pool)
+            logger.info("Cian mode ready (model=%s, window=%dx%d)", config.cian.onnx, *profile.window)
+
+        self.avito_step = None
+        if config.avito.enabled:
+            from src.avito import AvitoRemover, load_mark
+            from src.pipeline.avito import AvitoStep
+            mark = load_mark(config.avito.mark_dir)
+            remover = AvitoRemover(config.avito.onnx, mark, threads=config.avito.threads,
+                                   hint_scale=config.avito.hint_scale)
+            self.avito_step = AvitoStep(remover, config.avito.batch_size, self.io_pool)
+            logger.info("Avito mode ready (model=%s, window=%dx%d)", config.avito.onnx, *mark.window)
+
         logger.info("Pipeline ready (seg=%dx%d, removal=%dx%d, batch=%d, upscale_threshold=%dpx)",
                      config.model.seg_image_size, config.model.seg_image_size,
                      config.model.removal_image_width, config.model.removal_image_height,
@@ -147,20 +170,38 @@ class WatermarkRemovalPipeline:
                     for ctx in chunk:
                         ctx.error = str(e)
 
+    def _require_cian(self):
+        if self.cian_step is None:
+            raise RuntimeError("Cian mode not enabled — set cian.enabled=true in config")
+
     def process_single(self, image_bytes: bytes, fmt: str = "png",
-                       quality: int = 95, mode: str = "old") -> bytes:
-        """Process one image synchronously. Returns encoded result bytes."""
+                       quality: int = 95, mode: str = "old", listing_id: str | None = None) -> bytes:
+        """Process one image synchronously. Returns encoded result bytes.
+
+        mode "cian" needs the image's listing ID (the mark prints it).
+        """
         ctx = self._decode_to_context(image_bytes)
         if ctx.error:
             raise ValueError(ctx.error)
 
-        if mode == "old":
+        if mode == "cian":
+            self._require_cian()
+            if not listing_id:
+                raise ValueError("mode=cian needs listing_id")
+            self.cian_step.process_batch([ctx], [listing_id])
+        elif mode in ("old", "legacy_avito"):
             self.seg_step.process_batch([ctx])
             self.alignment_step.process_batch([ctx])
             self.removal_step.process_batch([ctx])
             self.blend_step.process_batch([ctx])
             self.upscale_step.process_batch([ctx])
-        else:
+        elif mode == "avito":
+            if self.avito_step is None:
+                raise RuntimeError("Avito mode not enabled — set avito.enabled=true in config")
+            self.avito_step.process_batch([ctx])
+        elif mode == "new":
+            # Keep the old fixed-rectangle inpainting behavior available to
+            # existing callers until they switch to the trained ``avito`` mode.
             if self.inpaint_step is None:
                 raise RuntimeError("New processing mode not enabled — set new.enabled=true in config")
             ctx.result_bgr = ctx.original_bgr.copy()
@@ -179,12 +220,19 @@ class WatermarkRemovalPipeline:
         fmt: str = "png",
         quality: int = 95,
         mode: str = "old",
+        listing_ids: list[str] | None = None,
     ) -> list[bytes | str]:
         """
         Process multiple images. Returns list of encoded bytes (success) or
-        error strings (failure) in the same order as input.
+        error strings (failure) in the same order as input. mode "cian" needs
+        one listing ID per image, in the same order.
         """
         total = len(images)
+        if mode == "cian":
+            self._require_cian()
+            if not listing_ids or len(listing_ids) != total:
+                raise ValueError(f"mode=cian needs one listing_id per image ({total} images, "
+                                 f"{len(listing_ids or [])} listing IDs)")
 
         # Decode in parallel (I/O bound)
         contexts = list(self.io_pool.map(
@@ -192,7 +240,11 @@ class WatermarkRemovalPipeline:
             enumerate(images),
         ))
 
-        if mode == "old":
+        if mode == "cian":
+            self.cian_step.process_batch(contexts, listing_ids)
+            if progress_callback:
+                progress_callback(total, total)
+        elif mode in ("old", "legacy_avito"):
             self._run_gpu_step(self.seg_step, contexts)
 
             list(self.io_pool.map(lambda ctx: self.alignment_step.process_batch([ctx]), contexts))
@@ -210,7 +262,13 @@ class WatermarkRemovalPipeline:
             self.upscale_step.process_batch(contexts)
             if progress_callback:
                 progress_callback(total, total)
-        else:
+        elif mode == "avito":
+            if self.avito_step is None:
+                raise RuntimeError("Avito mode not enabled — set avito.enabled=true in config")
+            self.avito_step.process_batch(contexts)
+            if progress_callback:
+                progress_callback(total, total)
+        elif mode == "new":
             if self.inpaint_step is None:
                 raise RuntimeError("New processing mode not enabled — set new.enabled=true in config")
             for ctx in contexts:

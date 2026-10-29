@@ -18,6 +18,8 @@ dependencies = [
     "timm>=0.9.0",
     "scipy>=1.11",
     "pytorch_lightning>=2.0",
+    "onnxruntime>=1.17",   # mode "cian"
+    "pillow>=10.1",        # mode "cian": renders the ID line of the mark
 ]
 
 [project.optional-dependencies]

@@ -1,9 +1,11 @@
 # Watermark Removal Service
 
-FastAPI microservice that removes watermarks from images. Two processing modes:
+FastAPI microservice that removes watermarks from images. Processing modes:
 
-- **"old" mode** — segmentation, template alignment, residual removal, feather blending
-- **"new" mode** — upscaling + fixed-region inpainting (Telea or LaMa)
+- **"avito" mode** — Avito's current small watermark (bottom-right logo): a small ONNX model on CPU on the image's corner window; the mark sits at fixed pixels, so nothing has to be detected
+- **"legacy_avito" mode** (alias `old`) — Avito's original (large) watermark, now out of circulation: segmentation, template alignment, residual removal, feather blending
+- **"cian" mode** — Cian: the mark is located from the image size and the listing ID and removed by a small ONNX model on CPU (needs the listing ID of each image)
+- **"new" mode** — the earlier treatment of the small Avito watermark (upscaling + fixed-region inpainting, Telea or LaMa), kept for existing callers; use `avito` instead
 
 ## Quick start
 
@@ -40,6 +42,37 @@ Place checkpoints in `models/` using these naming conventions:
 | Watermark template | `watermark.png` | Yes (RGBA) |
 | Real-ESRGAN upscaler | `RealESRGAN_x2plus.pth` | Only if upscale enabled |
 | LaMa inpainter | `big-lama/**/*.ckpt` | Only if new.method=lama |
+| Avito removal model | `model_avito_*.onnx` | Only if avito.enabled |
+| Avito mark assets | `avito/mark.json`, `avito/mark.npz` | Only if avito.enabled |
+| Cian removal model | `model_cian_*.onnx` | Only if cian.enabled |
+| Cian mark assets | `cian/mark.json`, `cian/mark.npz`, `cian/fonts/` | Only if cian.enabled |
+
+The Avito and Cian models and their mark assets are produced by `training/export_for_service.py`
+in the watermark-removal repo (`--out <this repo>/models`). **Deploy each model together with its
+mark folder**: the model input is built from the mark maps (Avito) or the hint rendered from the
+mark model (Cian: logo shadow, text-line strength), and they must match what the model was
+trained on. Keep a single `model_avito_*.onnx` and a single `model_cian_*.onnx` in `models/`
+(the newest by modification time is picked), or pin the paths in the config.
+
+### Current releases
+
+Both models ship in one package, `release_avito_v1_cian_c_v3.zip` (`DEPLOY.txt`, `models/`,
+`SHA256SUMS.txt`): copy its `models/` into `models/`, set `avito.enabled: true` and
+`cian.enabled: true`, and rebuild the image.
+
+**Avito: `model_avito_v1.onnx`** (8.5 MB) with `models/avito/`. ~31-39 ms per image with 4 CPU
+threads (~91-99 ms on one), no detection step. On 2,600 held-out real photos the leftover mark is
+0.4% median / 2.3% p90 of its original strength, the same as measured on unmarked photos (the
+measurement's noise floor). Known limit: a second, older Avito mark at a different position or
+size (photo cropped or resized and re-uploaded, ~0.1-0.2% of photos) is not removed when it lies
+outside or far from the standard position.
+
+**Cian: `model_cian_c_v3.onnx`** (2.3 MB, distilled student "C v3"). ~31 ms per image
+on one 6-core desktop CPU with all threads, ~30-34 images/s for the whole machine. It removes
+the logo, its shadow and the "ID" line at normal viewing; faint digit ghosts can remain,
+visible only at strongly increased contrast. The full-resolution teacher (`model_cian_ft7.onnx`,
+8.5 MB) is cleaner at high contrast but ~10-20x slower (~1.5-3 images/s); it uses the same
+mark assets and can be swapped in by replacing the model file.
 
 On startup, the service auto-detects the newest checkpoint for each prefix (by modification time). Set an explicit path in `config/default.yaml` to pin a version:
 
@@ -76,13 +109,15 @@ Process a single image. Returns the cleaned image directly.
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
 | `image` | file | — | Input image (required) |
-| `mode` | string | `old` | `"old"` or `"new"` |
+| `mode` | string | `old` | `"avito"`, `"legacy_avito"` (= `"old"`), `"cian"` or `"new"` |
+| `listing_id` | string | — | Cian listing ID (required for `mode=cian`) |
 | `output_format` | string | `png` | `"png"`, `"jpeg"`, or `"webp"` |
 | `quality` | int | `95` | 1–100, for jpeg/webp |
 
 ```bash
-curl -X POST -F "image=@photo.jpg" "http://localhost:8000/api/v1/process" -o result.png
+curl -X POST -F "image=@photo.jpg" "http://localhost:8000/api/v1/process?mode=avito" -o result.png
 curl -X POST -F "image=@photo.jpg" "http://localhost:8000/api/v1/process?mode=new&output_format=jpeg&quality=90" -o result.jpg
+curl -X POST -F "image=@photo.jpg" "http://localhost:8000/api/v1/process?mode=cian&listing_id=333768830" -o result.png
 ```
 
 ### `POST /api/v1/process/batch`
@@ -92,13 +127,16 @@ Process multiple images synchronously. Returns a ZIP archive.
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
 | `images` | files | — | Multiple image files (required) |
-| `mode` | string | `old` | `"old"` or `"new"` |
+| `mode` | string | `old` | `"avito"`, `"legacy_avito"` (= `"old"`), `"cian"` or `"new"` |
+| `listing_ids` | form field | — | `mode=cian`: comma-separated listing IDs, one per image, in upload order |
 | `output_format` | string | `png` | `"png"`, `"jpeg"`, or `"webp"` |
 | `quality` | int | `95` | 1–100 |
 
 ```bash
 curl -X POST -F "images=@a.jpg" -F "images=@b.jpg" \
   "http://localhost:8000/api/v1/process/batch" -o results.zip
+curl -X POST -F "images=@a.jpg" -F "images=@b.jpg" -F "listing_ids=333768830,329288428" \
+  "http://localhost:8000/api/v1/process/batch?mode=cian" -o results.zip
 ```
 
 ### `POST /api/v1/process/batch/async`
@@ -108,7 +146,8 @@ Submit a large batch for background processing. Returns a job ID.
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
 | `images` | files | — | Multiple image files (required) |
-| `mode` | string | `old` | `"old"` or `"new"` |
+| `mode` | string | `old` | `"avito"`, `"legacy_avito"` (= `"old"`), `"cian"` or `"new"` |
+| `listing_ids` | form field | — | `mode=cian`: comma-separated listing IDs, one per image, in upload order |
 | `output_format` | string | `png` | `"png"`, `"jpeg"`, or `"webp"` |
 | `quality` | int | `95` | 1–100 |
 
@@ -141,7 +180,20 @@ curl http://localhost:8000/api/v1/jobs/abc123/results -o results.zip
 
 ## Processing modes
 
-### "old" mode pipeline
+### "avito" mode pipeline
+
+```
+Input → Corner window → ONNX model → Paste back → Output
+```
+
+1. **Window** (CPU) — Avito stamps its small logo at the same pixels relative to the bottom-right corner of every image, so nothing is detected: the window is the image's last 64 rows × 128 columns. Images smaller than that are returned unchanged.
+2. **Model input** (CPU) — the window, the exact algebraic inverse of the measured mark (`out = b·(1−α) + A`, from `models/avito/mark.npz`) and the mark's strength map.
+3. **Model** (CPU, ONNX Runtime) — predicts a correction on top of the inverse (JPEG damage, clipped highlights, per-photo deviations of the mark); images are batched.
+4. **Paste back** — only the window changes. No upscaling.
+
+Enable it with `avito.enabled: true`; the other modes are unaffected.
+
+### "legacy_avito" / "old" mode pipeline
 
 ```
 Input → Segmentation → Alignment → Removal → Blend → Upscale (optional) → Output
@@ -155,6 +207,8 @@ Input → Segmentation → Alignment → Removal → Blend → Upscale (optional
 
 ### "new" mode pipeline
 
+The earlier treatment of the small Avito logo, kept for existing callers; `avito` is the trained replacement.
+
 ```
 Input → Upscale → Inpaint → Output
 ```
@@ -163,6 +217,22 @@ Input → Upscale → Inpaint → Output
 2. **Inpaint** (CPU/GPU) — Inpaints a fixed rectangle at the bottom-right corner of the image. Two methods:
    - `"telea"` (CPU) — OpenCV Telea inpainting, fast, no model needed.
    - `"lama"` (GPU) — LaMa FFCResNetGenerator, better quality, requires a checkpoint.
+
+### "cian" mode pipeline
+
+```
+Input + listing ID → Window → Locate mark → Render hint → ONNX model → Paste back → Output
+```
+
+1. **Window** (CPU) — the Cian mark sits at a position that follows the image size; a fixed 352×224 window around it is cut out (aligned to the JPEG 16-px grid). The rest of the image is never touched.
+2. **Locate** (CPU) — template matching finds the logo's exact position and size, then the ID line's style (bold / regular / none) and placement for the listing's ID.
+3. **Hint** (CPU) — the exact mark for that ID is rendered there; the model input is the window, the exact algebraic inverse of the mark, and the mark itself.
+4. **Model** (CPU, ONNX Runtime) — predicts a correction on top (JPEG damage around the letters, per-photo deviations of the mark); images are batched.
+5. **Paste back** — only the window changes. No upscaling.
+
+A photo re-used from another listing can carry that listing's ID; the model tolerates a wrong ID hint, but results are best with the right ID. A second, older mark from another listing (re-used photos, ~1%) is only partly removed: its ID is unknown.
+
+Enable it with `cian.enabled: true` (see `config/default.yaml`); the other modes are unaffected.
 
 ## Configuration
 
@@ -217,7 +287,7 @@ Supported upscaler variants:
 | Key | Default | Description |
 |-----|---------|-------------|
 | `new.enabled` | `true` | Enable "new" processing mode |
-| `new.method` | `lama` | `"telea"` or `"lama"` |
+| `new.method` | `lama` | Compatibility fallback only: `"telea"` or `"lama"` |
 | `new.inpaint_width` | `114` | Width of the fixed inpaint rectangle |
 | `new.inpaint_height` | `48` | Height of the fixed inpaint rectangle |
 | `new.inpaint_radius` | `3` | Telea inpainting radius |
@@ -232,21 +302,49 @@ Supported upscaler variants:
 | `batch.io_workers` | `4` | Thread pool for I/O-bound operations |
 | `batch.max_concurrent_jobs` | `4` | Max concurrent async batch jobs |
 
+### Avito settings ("avito" mode)
+
+See [Current releases](#current-releases) for the model files.
+
+| Key | Default | Description |
+|---|---|---|
+| `avito.enabled` | `false` | Load the small-logo ONNX model |
+| `avito.onnx` | `auto` | Newest `model_avito_*.onnx`, or an explicit path |
+| `avito.mark_dir` | `auto` | `models/avito/` (mark.json, mark.npz), exported with the model |
+| `avito.threads` | `0` | ONNX Runtime intra-op threads |
+| `avito.batch_size` | `8` | Images per model call |
+| `avito.hint_scale` | `8.0` | Must match the training configuration |
+
+### Cian settings ("cian" mode)
+
+| Key | Default | Description |
+|-----|---------|-------------|
+| `cian.enabled` | `false` | Load the Cian model at startup and accept `mode=cian` |
+| `cian.onnx` | `"auto"` | Newest `models_dir/model_cian_*.onnx`, or an explicit path |
+| `cian.mark_dir` | `"auto"` | `models_dir/cian` (mark.json, mark.npz, fonts/) |
+| `cian.threads` | `0` | ONNX Runtime threads (0 = runtime default) |
+| `cian.batch_size` | `8` | Images per model call |
+| `cian.hint_scale` | `8.0` | Must match the model's training config |
+
 ## Project structure
 
 ```
 watermark-service/
 ├── config/default.yaml         # service configuration
-├── models/                     # checkpoints (gitignored)
+├── models/                     # checkpoints and mark assets (gitignored)
 ├── src/
 │   ├── app.py                  # FastAPI app factory (lifespan, router)
 │   ├── config.py               # YAML loader + checkpoint auto-detection
+│   ├── avito.py                # small Avito logo: mark maps, model input, ONNX runner
+│   ├── cian/                   # Cian mark: profile, localisation, ONNX remover
 │   ├── api/
 │   │   ├── routes.py           # 6 endpoints
 │   │   ├── schemas.py          # Pydantic request/response models
 │   │   └── dependencies.py     # DI singletons
 │   ├── pipeline/
-│   │   ├── pipeline.py         # orchestrator (old/new mode, sub-batching)
+│   │   ├── pipeline.py         # orchestrator (all modes, sub-batching)
+│   │   ├── avito.py            # "avito" mode step
+│   │   ├── cian.py             # "cian" mode step
 │   │   ├── segmentation.py     # EfficientNet-B0 U-Net mask prediction
 │   │   ├── alignment.py        # template cross-correlation alignment
 │   │   ├── removal.py          # MaskedUNet residual prediction
@@ -272,7 +370,9 @@ watermark-service/
 │   └── setup.sh                # automated local venv setup (Linux/macOS)
 ├── tests/
 │   ├── test_api.py             # API integration tests (mocked pipeline)
-│   └── test_pipeline.py        # component unit tests (no real weights)
+│   ├── test_pipeline.py        # component unit tests (no real weights)
+│   ├── test_avito.py           # "avito" mode (real-model test runs if models/ has it)
+│   └── test_cian.py            # "cian" mode
 ├── Dockerfile
 ├── docker-compose.yml
 └── pyproject.toml
